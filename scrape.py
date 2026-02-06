@@ -6,7 +6,7 @@ from bs4 import BeautifulSoup
 import random
 import time
 import urllib.parse
-import base64  # for vmess decoding in dedup key
+import base64  # for vmess decoding/encoding and unique key
 
 CONFIG_REGEX = re.compile(
     r'(vmess://[^\s<>\[\]]+|vless://[^\s<>\[\]]+|trojan://[^\s<>\[\]]+|ss://[^\s<>\[\]]+|hysteria2://[^\s<>\[\]]+|hysteria://[^\s<>\[\]]+)'
@@ -17,7 +17,7 @@ DATA_DIR.mkdir(exist_ok=True)
 
 CHANNELS_FILE = "channels.json"
 MAX_CONFIGS_PER_CHANNEL = 300      # most recent 300 per channel
-MAX_PAGES_PER_CHANNEL = 15         # adjust as needed (5–20)
+MAX_PAGES_PER_CHANNEL = 10         # adjust as needed (5–20)
 REQUEST_TIMEOUT = 25
 
 USER_AGENTS = [
@@ -42,7 +42,7 @@ def get_config_unique_key(link: str) -> str:
         
         if scheme == 'vmess':
             padded = parsed.path + '=' * (4 - len(parsed.path) % 4)
-            decoded = base64.b64decode(padded).decode('utf-8')
+            decoded = base64.urlsafe_b64decode(padded).decode('utf-8')
             config = json.loads(decoded)
             host = config.get('add', '')
             port = str(config.get('port', ''))
@@ -73,54 +73,93 @@ def get_config_unique_key(link: str) -> str:
                 addr = parsed.netloc
             return f"{scheme}:{user}:{addr}"
         
-        return link  # fallback if parsing fails
+        return link  # fallback
     except:
         return link
 
 def clean_and_normalize_config(raw_link: str, channel_name: str, index: int = 0) -> str:
-    """Parse link and create a clean remark prefixed with channel name"""
+    """Parse link and create a clean remark prefixed with channel name. Handles VMess specially."""
     try:
-        parsed = urllib.parse.urlparse(raw_link)
-        qs = urllib.parse.parse_qs(parsed.query)
-
-        remark = qs.get('remark', [''])[0].strip()
-        remark = re.sub(r'[^\w\s\-:]', '', remark)  # strip emojis & junk
-
-        if remark and len(remark) > 4:  # use original if decent
-            if len(remark) > 50:  # shorten to leave room for channel prefix
-                remark = remark[:47] + "..."
-            final_remark = f"{channel_name} - {remark}"
+        scheme = raw_link.split('://')[0].lower()
+        
+        if scheme == 'vmess':
+            # Decode base64
+            base64_str = raw_link.split('://')[1]
+            padded = base64_str + '=' * (4 - len(base64_str) % 4)
+            decoded = base64.urlsafe_b64decode(padded).decode('utf-8')
+            config = json.loads(decoded)
+            
+            remark = config.get('ps', '').strip()
+            # Keep original chars (no strip junk)
+            
+            if remark and len(remark) > 4 and remark.lower() != 'none':
+                if len(remark) > 50:
+                    remark = remark[:47] + "..."
+                final_remark = f"{channel_name} - {remark}"
+            else:
+                # Fallback
+                host = config.get('add', 'unknown')
+                port = config.get('port', '')
+                port_str = f":{port}" if port else ""
+                proto = 'VMESS'
+                extra = ""
+                if index > 0 and index % 10 == 0:
+                    extra = f" #{index}"
+                elif '#' in raw_link:
+                    frag = raw_link.split('#')[-1][:8].strip()
+                    if frag and len(frag) > 3:
+                        extra = f" #{frag}"
+                final_remark = f"{channel_name} - {host}{port_str} - {proto}{extra}"
+            
+            # Update ps
+            config['ps'] = final_remark
+            
+            # Re-encode
+            new_json = json.dumps(config)
+            new_base64 = base64.urlsafe_b64encode(new_json.encode('utf-8')).decode('utf-8').rstrip('=')
+            return f"vmess://{new_base64}"
+        
         else:
-            # Fallback with channel prefix
-            host = parsed.hostname or "unknown"
-            port_str = f":{parsed.port}" if parsed.port else ""
-            proto = parsed.scheme.upper()
-            extra = ""
-            if index > 0 and index % 10 == 0:  # less frequent numbering
-                extra = f" #{index}"
-            elif '#' in raw_link:
-                frag = raw_link.split('#')[-1][:8].strip()
-                if frag and len(frag) > 3:
-                    extra = f" #{frag}"
-            final_remark = f"{channel_name} - {host}{port_str} - {proto}{extra}"
-
-        # Rebuild link with new remark (preserve other params)
-        new_qs = {k: v for k, v in qs.items() if k != 'remark'}
-        new_qs['remark'] = [final_remark]
-        new_query = urllib.parse.urlencode(new_qs, doseq=True)
-
-        clean_link = urllib.parse.urlunparse((
-            parsed.scheme,
-            parsed.netloc,
-            parsed.path,
-            parsed.params,
-            new_query,
-            parsed.fragment or ''
-        ))
-
-        return clean_link
+            # Non-vmess
+            parsed = urllib.parse.urlparse(raw_link)
+            qs = urllib.parse.parse_qs(parsed.query)
+            
+            remark = qs.get('remark', [''])[0].strip()
+            # Keep original
+            
+            if remark and len(remark) > 4 and remark.lower() != 'none':
+                if len(remark) > 50:
+                    remark = remark[:47] + "..."
+                final_remark = f"{channel_name} - {remark}"
+            else:
+                host = parsed.hostname or "unknown"
+                port_str = f":{parsed.port}" if parsed.port else ""
+                proto = parsed.scheme.upper()
+                extra = ""
+                if index > 0 and index % 10 == 0:
+                    extra = f" #{index}"
+                elif '#' in raw_link:
+                    frag = raw_link.split('#')[-1][:8].strip()
+                    if frag and len(frag) > 3:
+                        extra = f" #{frag}"
+                final_remark = f"{channel_name} - {host}{port_str} - {proto}{extra}"
+            
+            # Rebuild
+            new_qs = {k: v for k, v in qs.items() if k != 'remark'}
+            new_qs['remark'] = [final_remark]
+            new_query = urllib.parse.urlencode(new_qs, doseq=True)
+            
+            clean_link = urllib.parse.urlunparse((
+                parsed.scheme,
+                parsed.netloc,
+                parsed.path,
+                parsed.params,
+                new_query,
+                parsed.fragment or ''
+            ))
+            
+            return clean_link
     except Exception:
-        # Last resort
         fallback_remark = f"{channel_name} - Config-{index}" if index > 0 else f"{channel_name} - Config"
         sep = '&' if '?' in raw_link else '?'
         return f"{raw_link}{sep}remark={urllib.parse.quote(fallback_remark)}"
