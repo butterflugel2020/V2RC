@@ -6,7 +6,6 @@ from bs4 import BeautifulSoup
 import random
 import time
 import urllib.parse
-import base64
 
 CONFIG_REGEX = re.compile(
     r'(vmess://[^\s<>\[\]]+|vless://[^\s<>\[\]]+|trojan://[^\s<>\[\]]+|ss://[^\s<>\[\]]+|hysteria2://[^\s<>\[\]]+|hysteria://[^\s<>\[\]]+)'
@@ -16,8 +15,8 @@ DATA_DIR = Path("data")
 DATA_DIR.mkdir(exist_ok=True)
 
 CHANNELS_FILE = "channels.json"
-MAX_CONFIGS_PER_CHANNEL = 500      # increased from 200
-MAX_PAGES_PER_CHANNEL = 12         # adjust: 5–20 depending on how deep you want to go
+MAX_CONFIGS_PER_CHANNEL = 300      # reduced from 500 - keeps most recent 300 per channel
+MAX_PAGES_PER_CHANNEL = 12         # adjust as needed (5–20)
 REQUEST_TIMEOUT = 25
 
 USER_AGENTS = [
@@ -34,23 +33,36 @@ def get_random_headers():
         "Accept-Language": "en-US,en;q=0.5",
     }
 
-def clean_and_normalize_config(raw_link: str) -> str:
-    """Parse link, improve/fix remark, rebuild clean link"""
+def clean_and_normalize_config(raw_link: str, index: int = 0) -> str:
+    """Parse link and create a clean, meaningful remark"""
     try:
         parsed = urllib.parse.urlparse(raw_link)
         qs = urllib.parse.parse_qs(parsed.query)
 
-        remark = qs.get('remark', [''])[0]
-        remark = re.sub(r'[^\w\s\-:]', '', remark).strip()   # remove emojis & junk
-        if len(remark) > 60:
-            remark = remark[:57] + "..."
-        if not remark:
-            host = parsed.hostname or "unknown"
-            port = f":{parsed.port}" if parsed.port else ""
-            proto = parsed.scheme.upper()
-            remark = f"{host}{port} - {proto}"
+        remark = qs.get('remark', [''])[0].strip()
+        remark = re.sub(r'[^\w\s\-:]', '', remark)  # strip emojis & junk
 
-        # Rebuild query with clean remark (keep other params if present)
+        if remark and len(remark) > 4:  # use only if it looks useful
+            if len(remark) > 60:
+                remark = remark[:57] + "..."
+        else:
+            # Improved fallback naming
+            host = parsed.hostname or "unknown"
+            port_str = f":{parsed.port}" if parsed.port else ""
+            proto = parsed.scheme.upper()
+
+            # Add uniqueness if many similar configs
+            extra = ""
+            if index > 0 and index % 5 == 0:  # every 5th gets numbered
+                extra = f" #{index}"
+            elif '#' in raw_link:
+                frag = raw_link.split('#')[-1][:8].strip()
+                if frag and len(frag) > 3:
+                    extra = f" #{frag}"
+
+            remark = f"{host}{port_str} - {proto}{extra}"
+
+        # Rebuild the link with cleaned remark (preserve other params)
         new_qs = {k: v for k, v in qs.items() if k != 'remark'}
         new_qs['remark'] = [remark]
         new_query = urllib.parse.urlencode(new_qs, doseq=True)
@@ -61,25 +73,29 @@ def clean_and_normalize_config(raw_link: str) -> str:
             parsed.path,
             parsed.params,
             new_query,
-            parsed.fragment
+            parsed.fragment or ''
         ))
 
         return clean_link
     except Exception:
-        return raw_link  # fallback to original if parsing fails
+        # Last resort fallback
+        fallback_remark = f"Config-{index}" if index > 0 else "Config"
+        sep = '&' if '?' in raw_link else '?'
+        return f"{raw_link}{sep}remark={fallback_remark}"
 
 
 def scrape_channel(base_url: str, name: str):
     print(f"\nScraping {name} ({base_url}) ...")
-    all_configs = set()  # dedup across all pages
-    url = base_url.rstrip('/')  # normalize
+    all_configs = set()  # dedup across pages
+    url = base_url.rstrip('/')
     page_count = 0
+    global_index = 0
 
     while page_count < MAX_PAGES_PER_CHANNEL:
         page_count += 1
         print(f"  Page {page_count} → {url}")
         try:
-            time.sleep(random.uniform(2.0, 5.5))  # polite + varied
+            time.sleep(random.uniform(2.0, 5.5))
             r = requests.get(url, headers=get_random_headers(), timeout=REQUEST_TIMEOUT)
             r.raise_for_status()
         except Exception as e:
@@ -90,10 +106,10 @@ def scrape_channel(base_url: str, name: str):
         message_wrappers = soup.select("div.tgme_widget_message[data-post]")
 
         if not message_wrappers:
-            print("  → No messages found (possibly end of channel or class changed)")
+            print("  → No messages found (end of channel or class changed)")
             break
 
-        page_configs_count = 0
+        page_new_count = 0
         oldest_msg_id = None
 
         for wrapper in message_wrappers:
@@ -105,12 +121,13 @@ def scrape_channel(base_url: str, name: str):
             found_links = CONFIG_REGEX.findall(text)
 
             for raw_link in found_links:
-                clean_link = clean_and_normalize_config(raw_link)
+                global_index += 1
+                clean_link = clean_and_normalize_config(raw_link, index=global_index)
                 if clean_link not in all_configs:
                     all_configs.add(clean_link)
-                    page_configs_count += 1
+                    page_new_count += 1
 
-            # Get oldest message ID for next page
+            # Find oldest message ID for next page
             data_post = wrapper.get("data-post")
             if data_post:
                 try:
@@ -121,14 +138,14 @@ def scrape_channel(base_url: str, name: str):
                 except:
                     pass
 
-        print(f"  → Added {page_configs_count} new unique configs (total so far: {len(all_configs)})")
+        print(f"  → Added {page_new_count} new unique configs (total: {len(all_configs)})")
 
         if oldest_msg_id is None or oldest_msg_id <= 1:
             break
 
         url = f"{base_url}?before={oldest_msg_id}"
 
-    # After pagination: save
+    # Save result
     configs_list = list(all_configs)
     print(f"→ Total unique configs after {page_count} pages: {len(configs_list)}")
 
@@ -138,21 +155,13 @@ def scrape_channel(base_url: str, name: str):
         with open(outfile, encoding="utf-8") as f:
             old_configs = [line.strip() for line in f if line.strip()]
 
+    # Keep only the most recent 300 (newest first since we scrape recent → older)
     combined = list(dict.fromkeys(configs_list + old_configs))[:MAX_CONFIGS_PER_CHANNEL]
 
     with open(outfile, "w", encoding="utf-8") as f:
         f.write("\n".join(combined) + "\n")
 
-    print(f"→ Saved {len(combined)} configs → {outfile}")
-
-    # Optional: generate base64 subscription file
-    if combined:
-        sub_content = "\n".join(combined)
-        sub_b64 = base64.urlsafe_b64encode(sub_content.encode('utf-8')).decode('utf-8').rstrip('=')
-        sub_file = DATA_DIR / f"{name}_sub.txt"
-        with open(sub_file, "w", encoding="utf-8") as f:
-            f.write(sub_b64)
-        print(f"→ Subscription base64 saved → {sub_file}  (use in V2RayNG: https://raw.githubusercontent.com/.../{sub_file.name})")
+    print(f"→ Saved {len(combined)} configs (limited to {MAX_CONFIGS_PER_CHANNEL}) → {outfile}")
 
 
 def main():
@@ -165,7 +174,7 @@ def main():
 
     for name, url in channels.items():
         if not url.startswith("https://t.me/s/"):
-            print(f"Skipping {name}: URL should be https://t.me/s/... format")
+            print(f"Skipping {name}: URL should start with https://t.me/s/")
             continue
         scrape_channel(url, name)
 
