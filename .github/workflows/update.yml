@@ -2,7 +2,7 @@ name: Update V2Ray Configs
 
 on:
   schedule:
-    - cron: "*/20 * * * *"   # every 20 minutes – good balance, but consider "*/30" or hourly if you have many channels to avoid rate limits
+    - cron: "*/20 * * * *"
   workflow_dispatch:
 
 jobs:
@@ -16,7 +16,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"   # or "3.12" if you prefer – both fine
+          python-version: "3.11"
 
       - name: Install dependencies
         run: |
@@ -32,14 +32,15 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          
-          # Stage both raw .txt and base64 _sub.txt files
+
+          # Pull latest remote changes and rebase our work on top
+          git pull --rebase origin main || echo "No remote changes to pull or pull failed"
+
+          # Stage all generated .txt files (includes both raw and _sub.txt)
           git add data/*.txt || true
-          
-          # Optional: also add any other generated files if you expand later
-          # git add data/*_sub.txt || true   (already covered by *.txt)
-          
+
           # Commit only if there are changes (suppress error if nothing new)
           git commit -m "chore: auto-update V2Ray configs and subscriptions" || echo "No changes to commit"
-          
+
+          # Push the updated branch
           git push
