@@ -7,8 +7,7 @@ import random
 import time
 
 CONFIG_REGEX = re.compile(
-    r'(vmess://|vless://|trojan://|ss://|hysteria2://|hysteria://)[^ \n]+(?:#[^\n]*)?',
-    re.IGNORECASE
+    r'(vmess://[^\s]+|vless://[^\s]+|trojan://[^\s]+|ss://[^\s]+|hysteria2://[^\s]+|hysteria://[^\s]+)'
 )
 
 DATA_DIR = Path("data")
