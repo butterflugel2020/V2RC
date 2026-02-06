@@ -3,7 +3,7 @@ from bs4 import BeautifulSoup
 import re
 
 # List of specific public Telegram channels (usernames without @, e.g., 'v2ray_configs')
-channels = ['v2ray_configs', 'free_v2ray', 'another_channel']  # Customize this
+channels = ['ConfigV2rayNG', 'SOSkeyNET', 'lebertad', 'ConfigsHUB2', 'filembad', 'V2All']
 
 # Regex for V2Ray configs (vmess://, vless://, etc.)
 config_pattern = re.compile(r'(vmess://|vless://|trojan://)[A-Za-z0-9+/=]+')
