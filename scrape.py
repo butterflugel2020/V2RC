@@ -7,7 +7,7 @@ import random
 import time
 
 CONFIG_REGEX = re.compile(
-    r'(vmess://[^\s]+|vless://[^\s]+|trojan://[^\s]+|ss://[^\s]+|hysteria2://[^\s]+|hysteria://[^\s]+)',
+    r'(vmess://|vless://|trojan://|ss://|hysteria2://|hysteria://)[^ \n]+(?:#[^\n]*)?',
     re.IGNORECASE
 )
 
